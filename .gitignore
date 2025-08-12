@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.ipynb_checkpoints
+.env
+.venv
+venv/
+.envrc
+# Build/Dist
+build/
+dist/
+*.egg-info/
+# IDE
+.vscode/
+.idea/
+# Data & logs
+data/
+logs/
+# OS
+.DS_Store
+Thumbs.db
+EOF
+
+checkpoints/
+pho_base_ct2/
+PhoWhisper-large/
+wavs16k/
+vinai/
+tf/

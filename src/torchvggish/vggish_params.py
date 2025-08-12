@@ -1,0 +1,30 @@
+# Architectural constants.
+NUM_FRAMES = 96      # 0.96s @ hop 10ms
+NUM_BANDS  = 64      # mel bins
+EMBEDDING_SIZE = 128
+
+# Feature & example generation.
+SAMPLE_RATE = 16000
+STFT_WINDOW_LENGTH_SECONDS = 0.025
+STFT_HOP_LENGTH_SECONDS    = 0.010
+NUM_MEL_BINS = NUM_BANDS
+MEL_MIN_HZ   = 125
+MEL_MAX_HZ   = 7500
+LOG_OFFSET   = 0.01
+
+
+EXAMPLE_WINDOW_SECONDS = 0.96   
+EXAMPLE_HOP_SECONDS    = 0.96   
+
+
+PCA_EIGEN_VECTORS_NAME = "pca_eigen_vectors"
+PCA_MEANS_NAME         = "pca_means"
+QUANTIZE_MIN_VAL = -2.0
+QUANTIZE_MAX_VAL = +2.0
+
+
+INPUT_OP_NAME = "vggish/input_features"
+INPUT_TENSOR_NAME = INPUT_OP_NAME + ":0"
+OUTPUT_OP_NAME = "vggish/embedding"
+OUTPUT_TENSOR_NAME = OUTPUT_OP_NAME + ":0"
+AUDIO_EMBEDDING_FEATURE_NAME = "audio_embedding"
