@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, Optional
@@ -70,7 +71,7 @@ class CheckpointsCallback(Callback):
     ):
         log = logger or logging.getLogger(__name__)
 
-        # Train phase: lưu định kỳ theo step
+
         if not isValPhase and self.save_freq > 0:
             if global_step % self.save_freq == 0:
                 log.info("Saving checkpoint at step %d", global_step)
@@ -84,7 +85,7 @@ class CheckpointsCallback(Callback):
                     except Exception as e:
                         log.warning("Failed to delete %s: %s", old, e)
 
-        # Val phase: lưu best theo metric
+
         elif isValPhase and self.save_best_val:
             if self.monitor not in logs:
                 log.warning("Monitor '%s' không có trong logs: %s", self.monitor, list(logs.keys()))
@@ -98,3 +99,38 @@ class CheckpointsCallback(Callback):
                 log.info("Improved %s from %.6f to %.6f. Saving best...", self.monitor, prev, value)
                 ckpt_path = self._save(trainer, best_dir, 0)
                 self.best_path = ckpt_path
+
+
+class GradualUnfreezeCallback(Callback):
+
+    def __init__(self, epoch_trigger: int = 1, text_last_k: int = 4, audio_last_k: int = 4):
+        self.epoch_trigger = int(epoch_trigger)
+        self.text_last_k = int(text_last_k)
+        self.audio_last_k = int(audio_last_k)
+        self.done = False
+
+    def _set_requires_grad(self, module, pattern: str, last_k: int):
+        layer_ids = set()
+        for n, _ in module.named_parameters():
+            m = re.search(pattern, n)
+            if m:
+                layer_ids.add(int(m.group(1)))
+        if not layer_ids:
+            return
+        cutoff = set(sorted(layer_ids)[-last_k:])
+        for n, p in module.named_parameters():
+            m = re.search(pattern, n)
+            if m and int(m.group(1)) in cutoff:
+                p.requires_grad = True
+
+    def __call__(self, trainer, global_step, global_epoch, logs, isValPhase=False, logger: Optional[logging.Logger] = None):
+        if self.done or isValPhase or global_epoch < self.epoch_trigger:
+            return
+        log = logger or logging.getLogger(__name__)
+        net = trainer.network
+        # PhoBERT: encoder.layer.<i>.
+        self._set_requires_grad(net.text_encoder, r"encoder\.layer\.(\d+)\.", self.text_last_k)
+        # Wav2Vec2: encoder.layers.<i>.
+        self._set_requires_grad(net.audio_encoder.model, r"encoder\.layers\.(\d+)\.", self.audio_last_k)
+        self.done = True
+        log.info(f"Gradual unfreeze done at epoch {global_epoch}: text_last_k={self.text_last_k}, audio_last_k={self.audio_last_k}")

@@ -6,10 +6,14 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import torch
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
+import unicodedata 
 
-# torchaudio optional (fallback librosa)
+
 try:
     import torchaudio
     _HAS_TORCHAUDIO = True
@@ -21,8 +25,11 @@ except Exception:
 from configs.base import Config
 
 
-# ---------- helpers ----------
+def _nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s) if s is not None else ""
+
 def _clean_text(s: str) -> str:
+    s = _nfc(s)
     s = re.sub(r"[\(\[].*?[\)\]]", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s if s else "NULL"
@@ -33,30 +40,23 @@ def _safe_resample(wave: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Te
     if _HAS_TORCHAUDIO:
         return torchaudio.functional.resample(wave, orig_sr, target_sr)
     w = wave.detach().cpu().numpy().astype(np.float32, copy=False)
-    w_rs = librosa.resample(w, orig_sr=orig_sr, target_sr=target_sr)
+    w_rs = librosa.resample(y=w, orig_sr=orig_sr, target_sr=target_sr)
     return torch.from_numpy(w_rs.astype(np.float32))
 
 
 # ---------- VNEMOS ----------
 class VNEMOSDataset(Dataset):
-    """
-    Đọc JSONL:
-      {"utterance_id","speaker_id","wav_path","start","end","transcript","emotion"}
 
-    Đường dẫn:
-      - base_dir = (cfg.data_root / cfg.jsonl_dir).resolve()  → nơi chứa train/valid/test.jsonl
-      - audio_root = cfg.audio_root nếu có; nếu KHÔNG set, mặc định là base_dir.parent
-        (tức thư mục cha của output/, đúng case wavs16k/ và output/ cùng cấp)
-      - wav_path tương đối sẽ thử ở base_dir trước, rồi audio_root.
-    """
     def __init__(self, cfg: Config, split: str, label2id: Optional[Dict[str, int]] = None):
         super().__init__()
         self.cfg = cfg
         root = Path(cfg.data_root)
         jdir = getattr(cfg, "jsonl_dir", "")
         self.base_dir = ((root / jdir) if jdir else root).resolve()
-        # MẶC ĐỊNH ưu tiên parent của base_dir nếu user không set audio_root
-        self.audio_root = Path(getattr(cfg, "audio_root", self.base_dir.parent)).resolve()
+
+
+        ar = getattr(cfg, "audio_root", None)
+        self.audio_root = (Path(ar).resolve() if ar else self.base_dir.parent.resolve())
 
         jsonl = self.base_dir / f"{split}.jsonl"
         if not jsonl.exists():
@@ -78,9 +78,12 @@ class VNEMOSDataset(Dataset):
             self.label2id = {lb: i for i, lb in enumerate(labels)}
         else:
             self.label2id = label2id
+        self.id2label = {v: k for k, v in self.label2id.items()}
 
         self.sample_rate = int(getattr(cfg, "sample_rate", 16000))
         self.max_audio_sec = getattr(cfg, "max_audio_sec", None)
+
+        self.durations = [float(it["end"]) - float(it["start"]) for it in self.items]
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             getattr(cfg, "text_encoder_ckpt", "vinai/phobert-base"),
@@ -96,9 +99,7 @@ class VNEMOSDataset(Dataset):
         if p.is_absolute():
             return p
 
-        # 1) Thử ngay trong base_dir (output/…)
         cand1 = (self.base_dir / wav_path_str).resolve()
-        # 2) Nếu không có, thử ở audio_root (mặc định là parent của base_dir → /mnt/d/MER/…)
         cand2 = (self.audio_root / wav_path_str).resolve()
 
         if cand1.exists():
@@ -106,12 +107,10 @@ class VNEMOSDataset(Dataset):
         if cand2.exists():
             return cand2
 
-        # 3) Fallback: tìm theo basename trong audio_root trước (nhanh & phù hợp case wavs16k nằm ở /mnt/d/MER)
         name = Path(wav_path_str).name
         hits = list(self.audio_root.rglob(name))
         if hits:
             return hits[0]
-        # 4) Fallback phụ: tìm trong base_dir
         hits2 = list(self.base_dir.rglob(name))
         if hits2:
             return hits2[0]
@@ -137,7 +136,6 @@ class VNEMOSDataset(Dataset):
         wav_t = torch.from_numpy(wave.astype(np.float32, copy=False))
         wav_t = _safe_resample(wav_t, sr, self.sample_rate)
 
-        # pad/truncate
         if self.max_audio_sec is not None:
             max_len = int(round(self.max_audio_sec * self.sample_rate))
             if wav_t.numel() < max_len:
@@ -152,12 +150,11 @@ class VNEMOSDataset(Dataset):
             "utterance_id": ex.get("utterance_id"),
             "speaker_id":   ex.get("speaker_id"),
             "text":         text,
-            "audio":        wav_t,   # (T,)
+            "audio":        wav_t,  
             "label":        label,
         }
 
 
-# ---------- Pickle (tuỳ chọn, không dùng mặc định) ----------
 class PickleDataset(Dataset):
     def __init__(self, cfg: Config, data_mode: str = "train.pkl"):
         super().__init__()
@@ -181,20 +178,20 @@ class PickleDataset(Dataset):
         return {"text": _clean_text(text), "audio": wav_t, "label": int(label)}
 
 
-# ---------- Collate ----------
+
 class Collator:
     def __init__(self, tokenizer: AutoTokenizer, text_max_length: int = 64):
         self.tok = tokenizer
         self.text_max_length = text_max_length
 
     def __call__(self, batch: List[Dict]):
-        # pad audio theo độ dài max trong batch
+
         audios = [b["audio"] for b in batch]
+        lengths = [a.numel() for a in audios]  
         T = max(a.numel() for a in audios)
         aud = [a if a.numel() == T else torch.nn.functional.pad(a, (0, T - a.numel())) for a in audios]
-        audio_tensor = torch.stack(aud, dim=0)  # (B, T)
+        audio_tensor = torch.stack(aud, dim=0) 
 
-        # tokenize text (PhoBERT/Roberta cần add_prefix_space=True)
         texts = [b["text"] for b in batch]
         tok = self.tok(
             texts,
@@ -203,6 +200,7 @@ class Collator:
             max_length=self.text_max_length,
             return_tensors="pt",
             add_prefix_space=True,
+            pad_to_multiple_of=8,  
         )
 
         tok = {k: v for k, v in tok.items()}
@@ -214,18 +212,41 @@ class Collator:
             meta = {
                 "utterance_id": [b.get("utterance_id") for b in batch],
                 "speaker_id":   [b.get("speaker_id") for b in batch],
+                "audio_lengths": lengths,  
             }
             return out, meta
         return out
 
 
+
+import math, random
+from torch.utils.data import Sampler
+
+class LengthBucketBatchSampler(Sampler):
+    def __init__(self, lengths, batch_size=4, shuffle=True, bucket_size=64):
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.bucket_size = int(bucket_size)
+
+        idxs = list(range(len(lengths)))
+        if self.shuffle:
+            random.shuffle(idxs)
+        chunks = [idxs[i:i+self.bucket_size] for i in range(0, len(idxs), self.bucket_size)]
+        chunks = [sorted(ch, key=lambda i: lengths[i]) for ch in chunks]
+        self.order = [i for ch in chunks for i in ch]
+
+    def __iter__(self):
+        bs = self.batch_size
+        for i in range(0, len(self.order), bs):
+            yield self.order[i:i+bs]
+
+    def __len__(self):
+        return math.ceil(len(self.order) / self.batch_size)
+
+
 # ---------- Builder (JSONL only) ----------
 def build_train_test_dataset(cfg: Config, encoder_model: Optional[object] = None):
-    """
-    BẮT BUỘC dùng JSONL (VNEMOS). Không fallback PKL.
-    - Notebook ở src/: cfg.data_root='../output', cfg.jsonl_dir=''
-    - wavs16k/ cùng cấp output/ → loader tự dùng base_dir.parent nếu không set cfg.audio_root.
-    """
+
     base_dir = (Path(cfg.data_root) / (getattr(cfg, "jsonl_dir", "") or "")).resolve()
     train_jsonl = base_dir / "train.jsonl"
     valid_jsonl = base_dir / "valid.jsonl"
@@ -245,20 +266,46 @@ def build_train_test_dataset(cfg: Config, encoder_model: Optional[object] = None
 
     collate = Collator(train_set.tokenizer, text_max_length=getattr(cfg, "text_max_length", 64))
 
-    train_loader = DataLoader(
-        train_set,
-        batch_size=cfg.batch_size,
-        shuffle=True,
-        num_workers=cfg.num_workers,
-        collate_fn=collate,
-        pin_memory=True,
-    )
+    pin = torch.cuda.is_available()
+    nw = max(0, int(getattr(cfg, "num_workers", 0)))
+    persistent = True if nw > 0 else False
+
+    use_len_bucket = bool(getattr(cfg, "use_length_bucket", False))
+    bucket_size = int(getattr(cfg, "length_bucket_size", 64))
+
+    if use_len_bucket:
+        train_sampler = LengthBucketBatchSampler(
+            lengths=train_set.durations,
+            batch_size=cfg.batch_size,
+            shuffle=True,
+            bucket_size=bucket_size,
+        )
+        train_loader = DataLoader(
+            train_set,
+            batch_sampler=train_sampler,
+            num_workers=nw,
+            collate_fn=collate,
+            pin_memory=pin,
+            persistent_workers=persistent,
+        )
+    else:
+        train_loader = DataLoader(
+            train_set,
+            batch_size=cfg.batch_size,
+            shuffle=True,
+            num_workers=nw,
+            collate_fn=collate,
+            pin_memory=pin,
+            persistent_workers=persistent,
+        )
+
     eval_loader = DataLoader(
         eval_set,
         batch_size=max(1, cfg.batch_size),
         shuffle=False,
-        num_workers=cfg.num_workers,
+        num_workers=nw,
         collate_fn=collate,
-        pin_memory=True,
+        pin_memory=pin,
+        persistent_workers=persistent,
     )
     return train_loader, eval_loader

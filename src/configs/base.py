@@ -91,7 +91,7 @@ class Config(BaseConfig):
         self.num_workers: int = 2
 
         # LR/Optim
-        self.learning_rate: float = 2e-5
+        self.learning_rate: float = 3e-5           # head LR đề xuất
         self.learning_rate_step_size: int = 30
         self.learning_rate_gamma: float = 0.1
         self.optimizer_type: str = "AdamW"
@@ -102,31 +102,47 @@ class Config(BaseConfig):
         self.momemtum = 0.99
         self.sdg_weight_decay = 1e-6
 
+        # Scheduler
+        self.scheduler_type: str = "cosine_warmup" 
+        self.warmup_ratio: float = 0.1           
+        self.scheduler_step_unit: str = "step"     
+
+        # Gradual unfreeze
+        self.gradual_unfreeze_epoch: int = 1
+        self.text_unfreeze_last_k: int = 4
+        self.audio_unfreeze_last_k: int = 4
+
         # Resume
         self.resume: bool = False
         self.resume_path: Union[str, None] = None
         self.cfg_path: Union[str, None] = None
 
         # Loss
-        self.loss_type: str = "CrossEntropyLoss"
+        self.loss_type: str = "FocalLoss"   
+        self.loss_gamma: float = 1.5         
+        self.label_smoothing: float = 0.05
 
         # Dataset (VNEMOS JSONL)
         self.data_name: str = "VNEMOS"
-        self.data_root: str = "output"    
-        self.jsonl_dir: str = ""         
-        self.data_valid: Union[str, None] = None 
+        self.data_root: str = "output"
+        self.jsonl_dir: str = ""
+        self.data_valid: Union[str, None] = None
         self.sample_rate: int = 16000
-        self.max_audio_sec: float = 6.0
-        self.text_max_length: int = 64
+        self.max_audio_sec: float = None     
+        self.text_max_length: int = 96       
+
+        # Length-bucket sampler
+        self.use_length_bucket: bool = True
+        self.length_bucket_size: int = 64
 
         # Model
         self.num_classes: int = 4
         self.num_attention_head: int = 8
-        self.dropout: float = 0.05
+        self.dropout: float = 0.10
         self.model_type: str = "MemoCMT"
 
         # Text: PhoBERT
-        self.text_encoder_type: str = "phobert"   # ["phobert"]
+        self.text_encoder_type: str = "phobert"
         self.text_encoder_ckpt: str = "vinai/phobert-base"
         self.text_encoder_dim: int = 768
         self.text_unfreeze: bool = False
@@ -139,8 +155,8 @@ class Config(BaseConfig):
 
         # Fusion
         self.fusion_dim: int = 768
-        self.fusion_head_output_type: str = "mean"  # ["cls","mean","max","min"]
-        self.linear_layer_output: List = [128]
+        self.fusion_head_output_type: str = "cls" 
+        self.linear_layer_output: List = [256, 128]
 
         # Train tricks
         self.use_amp: bool = True

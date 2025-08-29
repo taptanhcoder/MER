@@ -10,10 +10,7 @@ def waveform_to_examples(data,
                          sample_rate,
                          return_tensor=True,
                          device=None):
-    """
-    Convert waveform -> VGGish input patches.
-    Output: (num_examples, 1, NUM_FRAMES, NUM_BANDS) if return_tensor=True.
-    """
+
 
     if data.ndim > 1:
         data = np.mean(data, axis=1)
@@ -57,9 +54,7 @@ def waveform_to_examples(data,
     return t
 
 def wavfile_to_examples(wav_file, return_tensor=True, device=None):
-    """
-    Read audio (int/float) -> VGGish patches tensor (N,1,96,64).
-    """
+
     wav_data, sr = sf.read(wav_file, always_2d=False)
     if np.issubdtype(wav_data.dtype, np.integer):
         info = np.iinfo(wav_data.dtype)

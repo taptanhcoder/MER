@@ -17,16 +17,12 @@ def adamw(params, learning_rate=0.01, weight_decay=0.01):
     return optim.AdamW(params, lr=learning_rate, weight_decay=weight_decay)
 
 
-# Tách param groups encoder/head (PhoBERT/Wav2Vec2 vs fusion/head)
+
 def split_param_groups(model,
                        lr_enc: float = 1e-5,
                        lr_head: float = 1e-4,
                        weight_decay: float = 0.01):
-    """
-    Gom tham số theo tiền tố:
-      - Encoder: model.text_encoder, model.audio_encoder
-      - Head/Fusion: phần còn lại
-    """
+
     module = getattr(model, "network", model)
     enc_prefixes = ("text_encoder", "audio_encoder")
     enc_ids = set()

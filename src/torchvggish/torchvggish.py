@@ -7,10 +7,7 @@ PCA_PARAMS     = "https://github.com/namphuongtran9196/GitReleaseStorage/release
 
 
 class Postprocessor(nn.Module):
-    """
-    PCA (whitening) + clip + quantize như YouTube-8M.
-    Dùng cho inference/compat; KHÔNG khuyến nghị khi training end-to-end.
-    """
+
     def __init__(self, pca_params_path: str = None):
         super().__init__()
         if pca_params_path is None:
@@ -42,10 +39,7 @@ def make_layers():
     return nn.Sequential(*layers)
 
 class VGG(nn.Module):
-    """
-    Input:  (B, 1, 96, 64)  log-mel patches
-    Output: (B, 128) embeddings; nếu postprocess=True: PCA+quantized float
-    """
+
     def __init__(self, features: nn.Module, postprocess: bool):
         super().__init__()
         self.postprocess = postprocess
@@ -79,12 +73,7 @@ def vggish(postprocess: bool = False,
            weights_path: str = None,
            pca_params_path: str = None,
            freeze_feature: bool = True) -> VGG:
-    """
-    Tạo VGGish model.
-    - postprocess=False khi TRAIN (tránh mất gradient sau FC).
-    - weights_path/pca_params_path: dùng local nếu có (offline).
-    - freeze_feature=True: đóng băng conv, chỉ train FC.
-    """
+ 
     model = _vgg(postprocess=postprocess)
     if weights_path is None:
         state_dict = hub.load_state_dict_from_url(VGGISH_WEIGHTS, progress=True, map_location="cpu")

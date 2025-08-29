@@ -37,14 +37,14 @@ class MER(nn.Module):
             num_heads=cfg.num_attention_head,
             dropout=cfg.dropout,
             batch_first=True,
-        )  # Q = text, K/V = audio
+        )  
 
         self.audio_attention = nn.MultiheadAttention(
             embed_dim=cfg.fusion_dim,
             num_heads=cfg.num_attention_head,
             dropout=cfg.dropout,
             batch_first=True,
-        )  # Q = audio, K/V = text
+        ) 
 
         # optional post-fusion FFN + LN
         self.post_fusion = nn.Sequential(
@@ -63,72 +63,100 @@ class MER(nn.Module):
             setattr(self, f"linear_{i}", nn.Linear(previous_dim, hidden))
             previous_dim = hidden
 
-        
         self.classifer = nn.Linear(previous_dim, cfg.num_classes)
+        self.fusion_head_output_type = cfg.fusion_head_output_type
 
-        self.fusion_head_output_type = cfg.fusion_head_output_type 
+    def _build_masks(self, input_text, input_audio, meta, device):
+
+        B, T = input_audio.shape
+
+        if meta is not None and "audio_lengths" in meta:
+            lengths = torch.as_tensor(meta["audio_lengths"], device=device, dtype=torch.long)
+            attn_mask_audio_input = (torch.arange(T, device=device).unsqueeze(0) < lengths.unsqueeze(1)).long()
+        else:
+            attn_mask_audio_input = torch.ones((B, T), device=device, dtype=torch.long)
+
+
+        if isinstance(input_text, dict) and "attention_mask" in input_text:
+            kpm_text = (input_text["attention_mask"] == 0)  
+        else:
+            kpm_text = None
+
+        return attn_mask_audio_input, kpm_text
 
     def forward(
         self,
-        input_text,               
-        input_audio: torch.Tensor, 
+        input_text,              
+        input_audio: torch.Tensor,   
+        meta: dict = None,
         output_attentions: bool = False,
     ):
+        device = input_audio.device
+
         # ---- TEXT ----
-        # Hỗ trợ fallback nếu lỡ truyền tensor (không khuyến khích)
         if isinstance(input_text, dict):
-            text_out = self.text_encoder(**input_text)               # HF output
+            text_out = self.text_encoder(**input_text)              
+            t_mask = input_text.get("attention_mask", None)
         else:
-            text_out = self.text_encoder(input_text)                 # not recommended
-        text_emb = text_out.last_hidden_state                        # (B, L_t, D_t)
-        t = self.text_proj(text_emb)                                 # (B, L_t, D_f)
+            text_out = self.text_encoder(input_text)
+            t_mask = None
+        text_emb = text_out.last_hidden_state                       
+        t = self.text_proj(text_emb)                               
         t = self.text_ln(t)
 
         # ---- AUDIO ----
-        if input_audio.dim() == 3:                                   # (B, N, T) -> nối theo thời gian
-            B, N, T = input_audio.shape
-            a_feat = self.audio_encoder(input_audio.view(B * N, T))  # (B*N, L_a, D_a)
-            a_feat = a_feat.view(B, N * a_feat.size(1), a_feat.size(2))
-        else:                                                        # (B, T)
-            a_feat = self.audio_encoder(input_audio)                 # (B, L_a, D_a)
-
-        a = self.audio_proj(a_feat)                                  # (B, L_a, D_f)
+        attn_mask_audio_input, kpm_text = self._build_masks(input_text, input_audio, meta, device)
+        a_feat = self.audio_encoder(input_audio, attention_mask=attn_mask_audio_input) 
+        a = self.audio_proj(a_feat)                                
         a = self.audio_ln(a)
 
+        if meta is not None and "audio_lengths" in meta:
+            lengths = torch.as_tensor(meta["audio_lengths"], device=device, dtype=torch.long)
+            L_valid = self.audio_encoder.get_feat_lengths(lengths)  
+            L_a = a.size(1)
+    
+            L_valid = torch.clamp(L_valid, min=1, max=L_a)
+            kpm_audio = (torch.arange(L_a, device=device).unsqueeze(0) >= L_valid.unsqueeze(1))
+
+            all_mask = kpm_audio.all(dim=1)
+            if bool(all_mask.any().item()):
+                kpm_audio[all_mask] = False
+        else:
+            kpm_audio = None
+
         # ---- CROSS-ATTENTION (2 chiều) ----
-        # Text attends to Audio: Q=t, K/V=a
+
         text_attention, text_attn_weights = self.text_attention(
-            query=t, key=a, value=a, average_attn_weights=False
+            query=t, key=a, value=a, key_padding_mask=kpm_audio, average_attn_weights=False
         )
         text_norm = self.post_fusion(text_attention)
         text_norm = self.dropout(text_norm)
 
-        # Audio attends to Text: Q=a, K/V=t
+
         audio_attention, audio_attn_weights = self.audio_attention(
-            query=a, key=t, value=t, average_attn_weights=False
+            query=a, key=t, value=t, key_padding_mask=kpm_text, average_attn_weights=False
         )
         audio_norm = self.post_fusion(audio_attention)
         audio_norm = self.dropout(audio_norm)
 
         # ---- Fusion concat ----
-        fusion_norm = torch.cat((text_norm, audio_norm), dim=1)     
+        fusion_norm = torch.cat((text_norm, audio_norm), dim=1)
         fusion_norm = self.dropout(fusion_norm)
 
         # ---- Pooling ----
         if self.fusion_head_output_type == "cls":
-            # Dùng token đầu của TEXT sau cross-attn (ổn định hơn)
-            cls_token_final_fusion_norm = text_norm[:, 0, :]
+            pooled = text_norm[:, 0, :]
         elif self.fusion_head_output_type == "mean":
-            cls_token_final_fusion_norm = fusion_norm.mean(dim=1)
+            pooled = fusion_norm.mean(dim=1)
         elif self.fusion_head_output_type == "max":
-            cls_token_final_fusion_norm = fusion_norm.max(dim=1)[0]
+            pooled = fusion_norm.max(dim=1)[0]
         elif self.fusion_head_output_type == "min":
-            cls_token_final_fusion_norm = fusion_norm.min(dim=1)[0]
+            pooled = fusion_norm.min(dim=1)[0]
         else:
             raise ValueError("Invalid fusion head output type")
 
         # ---- Classification head ----
-        x = self.dropout(cls_token_final_fusion_norm)
+        x = self.dropout(pooled)
         for i, _ in enumerate(self.linear_layer_output):
             x = getattr(self, f"linear_{i}")(x)
             x = nn.functional.leaky_relu(x)
@@ -136,21 +164,9 @@ class MER(nn.Module):
         out = self.classifer(x)
 
         if output_attentions:
-            return [out, cls_token_final_fusion_norm], [text_attn_weights, audio_attn_weights]
+            return [out, pooled], [text_attn_weights, audio_attn_weights]
 
-        # Trả thêm tensor như cũ để loss/metrics dùng nếu cần
-        return out, cls_token_final_fusion_norm, text_norm, audio_norm
-
-    # ---- tiện ích ----
-    def encode_audio(self, audio: torch.Tensor):
-        return self.audio_encoder(audio)  # trả (B, L_a, D_a)
-
-    def encode_text(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None, **kwargs):
-        return self.text_encoder(input_ids=input_ids, attention_mask=attention_mask, **kwargs).last_hidden_state
-
-
-
-
+        return out, pooled, text_norm, audio_norm
 
 
 class TextOnly(nn.Module):
@@ -223,10 +239,10 @@ class AudioOnly(nn.Module):
     def forward(self, input_text=None, input_audio: torch.Tensor = None, output_attentions: bool = False):
         if input_audio.dim() == 3:
             B, N, T = input_audio.shape
-            a_feat = self.audio_encoder(input_audio.view(B * N, T))    # (B*N, L_a, D_a)
+            a_feat = self.audio_encoder(input_audio.view(B * N, T))
             a_feat = a_feat.view(B, N * a_feat.size(1), a_feat.size(2))
         else:
-            a_feat = self.audio_encoder(input_audio)                   # (B, L_a, D_a)
+            a_feat = self.audio_encoder(input_audio)
 
         fusion_norm = self.dropout(a_feat)
 
@@ -249,3 +265,6 @@ class AudioOnly(nn.Module):
         out = self.classifer(x)
 
         return out, pooled
+
+
+
