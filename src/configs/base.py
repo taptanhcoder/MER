@@ -42,9 +42,10 @@ class BaseConfig(Base):
     def load(self, cfg_path: str):
         def decode_value(value: str):
             value = value.strip()
-            if "." in value and value.replace(".", "").isdigit():
-                return float(value)
-            if value.isdigit():
+            # số int/float (kể cả số âm)
+            if value.lstrip("-").replace(".", "", 1).isdigit():
+                if "." in value:
+                    return float(value)
                 return int(value)
             if value == "True":
                 return True
@@ -60,7 +61,8 @@ class BaseConfig(Base):
             data = [d for d in f.read().split("\n") if d]
         data_dict = {}
         for line in data:
-            key, value = line.split(":")[0].strip(), line.split(":")[1].strip()
+            # chỉ tách 1 lần đầu, tránh vỡ khi value có dấu ':'
+            key, value = line.split(":", 1)[0].strip(), line.split(":", 1)[1].strip()
             if value.startswith("[") and value.endswith("]"):
                 value = [decode_value(x) for x in value[1:-1].split(",")]
             else:
@@ -99,13 +101,13 @@ class Config(BaseConfig):
         self.adam_beta_2 = 0.999
         self.adam_eps = 1e-08
         self.adam_weight_decay = 0.01
-        self.momemtum = 0.99
+        self.momentum = 0.99                 # fixed typo
         self.sdg_weight_decay = 1e-6
 
         # Scheduler
-        self.scheduler_type: str = "cosine_warmup" 
-        self.warmup_ratio: float = 0.1           
-        self.scheduler_step_unit: str = "step"     
+        self.scheduler_type: str = "cosine_warmup"
+        self.warmup_ratio: float = 0.1
+        self.scheduler_step_unit: str = "step"
 
         # Gradual unfreeze
         self.gradual_unfreeze_epoch: int = 1
@@ -118,8 +120,8 @@ class Config(BaseConfig):
         self.cfg_path: Union[str, None] = None
 
         # Loss
-        self.loss_type: str = "FocalLoss"   
-        self.loss_gamma: float = 1.5         
+        self.loss_type: str = "FocalLoss"
+        self.loss_gamma: float = 1.5
         self.label_smoothing: float = 0.05
 
         # Dataset (VNEMOS JSONL)
@@ -128,15 +130,20 @@ class Config(BaseConfig):
         self.jsonl_dir: str = ""
         self.data_valid: Union[str, None] = None
         self.sample_rate: int = 16000
-        self.max_audio_sec: float = None     
-        self.text_max_length: int = 96       
+        self.max_audio_sec: float = None
+        self.text_max_length: int = 96
 
         # Length-bucket sampler
         self.use_length_bucket: bool = True
         self.length_bucket_size: int = 64
+        self.bucketing_text_alpha: float = 0.03  # mức ảnh hưởng text vào mix-length
+
+        # Weighted sampler chống length-bias theo lớp
+        self.use_weighted_sampler: bool = True
+        self.lenfreq_alpha: float = 0.5
 
         # Model
-        self.num_classes: int = 4
+        self.num_classes: int = 5              # fixed to 5
         self.num_attention_head: int = 8
         self.dropout: float = 0.10
         self.model_type: str = "MemoCMT"
@@ -155,7 +162,7 @@ class Config(BaseConfig):
 
         # Fusion
         self.fusion_dim: int = 768
-        self.fusion_head_output_type: str = "cls" 
+        self.fusion_head_output_type: str = "cls"
         self.linear_layer_output: List = [256, 128]
 
         # Train tricks

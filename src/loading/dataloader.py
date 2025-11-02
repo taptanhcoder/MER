@@ -10,8 +10,9 @@ import torch
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Sampler, WeightedRandomSampler
 from transformers import AutoTokenizer
-import unicodedata 
+import unicodedata
 
 
 try:
@@ -30,9 +31,9 @@ def _nfc(s: str) -> str:
 
 def _clean_text(s: str) -> str:
     s = _nfc(s)
-    s = re.sub(r"[\(\[].*?[\)\]]", "", s)
+    # Giữ lại cue cảm xúc trong ngoặc như (cười)/(khóc); chỉ chuẩn hoá khoảng trắng
     s = re.sub(r"\s+", " ", s).strip()
-    return s if s else "NULL"
+    return s  # để chuỗi rỗng nếu trống, tokenizer sẽ pad
 
 def _safe_resample(wave: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tensor:
     if orig_sr == target_sr:
@@ -53,7 +54,6 @@ class VNEMOSDataset(Dataset):
         root = Path(cfg.data_root)
         jdir = getattr(cfg, "jsonl_dir", "")
         self.base_dir = ((root / jdir) if jdir else root).resolve()
-
 
         ar = getattr(cfg, "audio_root", None)
         self.audio_root = (Path(ar).resolve() if ar else self.base_dir.parent.resolve())
@@ -84,6 +84,35 @@ class VNEMOSDataset(Dataset):
         self.max_audio_sec = getattr(cfg, "max_audio_sec", None)
 
         self.durations = [float(it["end"]) - float(it["start"]) for it in self.items]
+        # Ước lượng số "token" theo số từ (nhanh, đủ dùng cho bucket)
+        self.text_lengths_est = [len(_clean_text(it.get("transcript", "")).split()) for it in self.items]
+
+        # ---- Class-length weights (đánh length-bias) ----
+        # Tạo per-class thống kê length kết hợp (audio_sec + alpha*text_words)
+        from collections import defaultdict, Counter
+        alpha = float(getattr(cfg, "bucketing_text_alpha", 0.03))
+        mix_len = [self.durations[i] + alpha * self.text_lengths_est[i] for i in range(len(self.items))]
+
+        labels_idx = [self.label2id[it["emotion"]] for it in self.items]
+        by_c = defaultdict(list)
+        for i, c in enumerate(labels_idx):
+            by_c[c].append(mix_len[i])
+        class_mean_mix = {c: (sum(v) / max(1, len(v))) for c, v in by_c.items()}
+        mean_all = sum(class_mean_mix.values()) / len(class_mean_mix)
+        class_len_score = {c: class_mean_mix[c] / mean_all for c in class_mean_mix}  # >1: dài hơn TB
+
+        cnt = Counter(labels_idx); n = len(labels_idx); k = len(cnt)
+        freq_norm = {c: (cnt[c] / n) / (1.0 / k) for c in cnt}  # >1: nhiều hơn TB
+
+        len_alpha = float(getattr(cfg, "lenfreq_alpha", 0.5))
+        class_weight_lenfreq = {c: (1.0 / max(1e-8, freq_norm[c])) * (1.0 / (class_len_score[c] ** len_alpha)) for c in cnt}
+        mean_w = sum(class_weight_lenfreq.values()) / len(class_weight_lenfreq)
+        class_weight_lenfreq = {c: class_weight_lenfreq[c] / mean_w for c in class_weight_lenfreq}
+
+        # Lưu per-sample weights để dùng WeightedRandomSampler
+        self.sample_weights_lenfreq = [class_weight_lenfreq[labels_idx[i]] for i in range(len(self.items))]
+        # Lưu mix-length để sampler bucket
+        self.mix_lengths = mix_len
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             getattr(cfg, "text_encoder_ckpt", "vinai/phobert-base"),
@@ -150,7 +179,7 @@ class VNEMOSDataset(Dataset):
             "utterance_id": ex.get("utterance_id"),
             "speaker_id":   ex.get("speaker_id"),
             "text":         text,
-            "audio":        wav_t,  
+            "audio":        wav_t,
             "label":        label,
         }
 
@@ -178,7 +207,6 @@ class PickleDataset(Dataset):
         return {"text": _clean_text(text), "audio": wav_t, "label": int(label)}
 
 
-
 class Collator:
     def __init__(self, tokenizer: AutoTokenizer, text_max_length: int = 64):
         self.tok = tokenizer
@@ -187,10 +215,15 @@ class Collator:
     def __call__(self, batch: List[Dict]):
 
         audios = [b["audio"] for b in batch]
-        lengths = [a.numel() for a in audios]  
+        lengths = [a.numel() for a in audios]
         T = max(a.numel() for a in audios)
         aud = [a if a.numel() == T else torch.nn.functional.pad(a, (0, T - a.numel())) for a in audios]
-        audio_tensor = torch.stack(aud, dim=0) 
+        audio_tensor = torch.stack(aud, dim=0)
+
+        # audio attention mask: 1=real, 0=pad
+        audio_attn_mask = torch.zeros((len(batch), T), dtype=torch.long)
+        for i, L in enumerate(lengths):
+            audio_attn_mask[i, :L] = 1
 
         texts = [b["text"] for b in batch]
         tok = self.tok(
@@ -200,7 +233,7 @@ class Collator:
             max_length=self.text_max_length,
             return_tensors="pt",
             add_prefix_space=True,
-            pad_to_multiple_of=8,  
+            pad_to_multiple_of=8,
         )
 
         tok = {k: v for k, v in tok.items()}
@@ -212,16 +245,14 @@ class Collator:
             meta = {
                 "utterance_id": [b.get("utterance_id") for b in batch],
                 "speaker_id":   [b.get("speaker_id") for b in batch],
-                "audio_lengths": lengths,  
+                "audio_lengths": lengths,
+                "audio_attn_mask": audio_attn_mask,
             }
             return out, meta
         return out
 
 
-
 import math, random
-from torch.utils.data import Sampler
-
 class LengthBucketBatchSampler(Sampler):
     def __init__(self, lengths, batch_size=4, shuffle=True, bucket_size=64):
         self.batch_size = int(batch_size)
@@ -274,12 +305,15 @@ def build_train_test_dataset(cfg: Config, encoder_model: Optional[object] = None
     bucket_size = int(getattr(cfg, "length_bucket_size", 64))
 
     if use_len_bucket:
+        # Bucket theo MIX (audio + alpha*text) để giảm pad cả 2 modality
+        mix_lengths = [train_set.mix_lengths[i] for i in range(len(train_set))]
         train_sampler = LengthBucketBatchSampler(
-            lengths=train_set.durations,
+            lengths=mix_lengths,
             batch_size=cfg.batch_size,
             shuffle=True,
             bucket_size=bucket_size,
         )
+        # Lưu ý: không thể dùng sampler và batch_sampler cùng lúc.
         train_loader = DataLoader(
             train_set,
             batch_sampler=train_sampler,
@@ -289,15 +323,31 @@ def build_train_test_dataset(cfg: Config, encoder_model: Optional[object] = None
             persistent_workers=persistent,
         )
     else:
-        train_loader = DataLoader(
-            train_set,
-            batch_size=cfg.batch_size,
-            shuffle=True,
-            num_workers=nw,
-            collate_fn=collate,
-            pin_memory=pin,
-            persistent_workers=persistent,
-        )
+        if bool(getattr(cfg, "use_weighted_sampler", True)):
+            wrs = WeightedRandomSampler(
+                weights=torch.tensor(train_set.sample_weights_lenfreq, dtype=torch.float),
+                num_samples=len(train_set),
+                replacement=True
+            )
+            train_loader = DataLoader(
+                train_set,
+                batch_size=cfg.batch_size,
+                sampler=wrs,
+                num_workers=nw,
+                collate_fn=collate,
+                pin_memory=pin,
+                persistent_workers=persistent,
+            )
+        else:
+            train_loader = DataLoader(
+                train_set,
+                batch_size=cfg.batch_size,
+                shuffle=True,
+                num_workers=nw,
+                collate_fn=collate,
+                pin_memory=pin,
+                persistent_workers=persistent,
+            )
 
     eval_loader = DataLoader(
         eval_set,

@@ -6,12 +6,7 @@ from .modules import build_audio_encoder, build_text_encoder
 
 
 class MER(nn.Module):
-    """
-    Multimodal MER cho tiếng Việt:
-    - Text: PhoBERT (Roberta) -> last_hidden_state (B, L_t, D_t)
-    - Audio: Wav2Vec2 XLSR-53 -> last_hidden_state (B, L_a, D_a)
-    - Fusion: Cross-attention hai chiều sau khi chiếu về cùng fusion_dim
-    """
+
     def __init__(self, cfg: Config, device: str = "cpu"):
         super().__init__()
         self.cfg = cfg
@@ -37,14 +32,14 @@ class MER(nn.Module):
             num_heads=cfg.num_attention_head,
             dropout=cfg.dropout,
             batch_first=True,
-        )  
+        )
 
         self.audio_attention = nn.MultiheadAttention(
             embed_dim=cfg.fusion_dim,
             num_heads=cfg.num_attention_head,
             dropout=cfg.dropout,
             batch_first=True,
-        ) 
+        )
 
         # optional post-fusion FFN + LN
         self.post_fusion = nn.Sequential(
@@ -56,7 +51,7 @@ class MER(nn.Module):
 
         self.dropout = nn.Dropout(cfg.dropout)
 
-        # ---- Classification head ----
+
         self.linear_layer_output = cfg.linear_layer_output
         previous_dim = cfg.fusion_dim
         for i, hidden in enumerate(self.linear_layer_output):
@@ -70,15 +65,16 @@ class MER(nn.Module):
 
         B, T = input_audio.shape
 
-        if meta is not None and "audio_lengths" in meta:
+        if meta is not None and "audio_attn_mask" in meta:
+            attn_mask_audio_input = meta["audio_attn_mask"].to(device)
+        elif meta is not None and "audio_lengths" in meta:
             lengths = torch.as_tensor(meta["audio_lengths"], device=device, dtype=torch.long)
             attn_mask_audio_input = (torch.arange(T, device=device).unsqueeze(0) < lengths.unsqueeze(1)).long()
         else:
             attn_mask_audio_input = torch.ones((B, T), device=device, dtype=torch.long)
 
-
         if isinstance(input_text, dict) and "attention_mask" in input_text:
-            kpm_text = (input_text["attention_mask"] == 0)  
+            kpm_text = (input_text["attention_mask"] == 0)
         else:
             kpm_text = None
 
@@ -86,8 +82,8 @@ class MER(nn.Module):
 
     def forward(
         self,
-        input_text,              
-        input_audio: torch.Tensor,   
+        input_text,                 
+        input_audio: torch.Tensor,  
         meta: dict = None,
         output_attentions: bool = False,
     ):
@@ -95,26 +91,27 @@ class MER(nn.Module):
 
         # ---- TEXT ----
         if isinstance(input_text, dict):
-            text_out = self.text_encoder(**input_text)              
+            text_out = self.text_encoder(**input_text)
             t_mask = input_text.get("attention_mask", None)
         else:
             text_out = self.text_encoder(input_text)
             t_mask = None
-        text_emb = text_out.last_hidden_state                       
-        t = self.text_proj(text_emb)                               
+        text_emb = text_out.last_hidden_state
+        t = self.text_proj(text_emb)
         t = self.text_ln(t)
 
         # ---- AUDIO ----
         attn_mask_audio_input, kpm_text = self._build_masks(input_text, input_audio, meta, device)
-        a_feat = self.audio_encoder(input_audio, attention_mask=attn_mask_audio_input) 
-        a = self.audio_proj(a_feat)                                
+        a_feat = self.audio_encoder(input_audio, attention_mask=attn_mask_audio_input)
+        a = self.audio_proj(a_feat)
         a = self.audio_ln(a)
 
+        # mask sau conv 
         if meta is not None and "audio_lengths" in meta:
             lengths = torch.as_tensor(meta["audio_lengths"], device=device, dtype=torch.long)
-            L_valid = self.audio_encoder.get_feat_lengths(lengths)  
+            L_valid = self.audio_encoder.get_feat_lengths(lengths)  # (B,)
             L_a = a.size(1)
-    
+
             L_valid = torch.clamp(L_valid, min=1, max=L_a)
             kpm_audio = (torch.arange(L_a, device=device).unsqueeze(0) >= L_valid.unsqueeze(1))
 
@@ -125,13 +122,11 @@ class MER(nn.Module):
             kpm_audio = None
 
         # ---- CROSS-ATTENTION (2 chiều) ----
-
         text_attention, text_attn_weights = self.text_attention(
             query=t, key=a, value=a, key_padding_mask=kpm_audio, average_attn_weights=False
         )
         text_norm = self.post_fusion(text_attention)
         text_norm = self.dropout(text_norm)
-
 
         audio_attention, audio_attn_weights = self.audio_attention(
             query=a, key=t, value=t, key_padding_mask=kpm_text, average_attn_weights=False
@@ -267,4 +262,5 @@ class AudioOnly(nn.Module):
         return out, pooled
 
 
-
+# Alias cho trainer/config cũ
+MemoCMT = MER

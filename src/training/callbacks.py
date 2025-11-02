@@ -29,7 +29,7 @@ class CheckpointsCallback(Callback):
         save_best_val: bool = False,
         save_all_states: bool = False,
         monitor: str = "val_loss",
-        mode: str = "min",  # 'min' cho loss, 'max' cho acc/f1
+        mode: str = "min",  
     ):
         self.ckpt_dir = Path(checkpoint_dir)
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
