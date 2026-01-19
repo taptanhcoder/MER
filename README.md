@@ -1,134 +1,117 @@
-# MER-VN: A Research-Oriented Framework for Vietnamese Multimodal Emotion Recognition (Text + Audio)
+# VietMER: Vietnamese Multimodal Emotion Recognition (Text + Audio)
 
-A modular, academic-first codebase for **Multimodal Emotion Recognition (MER)** from **Vietnamese transcripts and speech**.  
-MER-VN is designed for **systematic research**, enabling controlled ablations over **encoders**, **fusion mechanisms**, **mask-aware pooling**, and **training/sampling protocols**.
+**VietMER** is a research-oriented framework for **Multimodal Emotion Recognition (MER)** from **Vietnamese speech and transcripts**. It is built to support **academic experimentation**, **reproducible benchmarking**, and practical prototyping for **call center intelligence** and related affect-aware applications.
+
+---
+
+## Introduction
+
+VietMER is a modular **encoder → fusion → classifier** framework for MER, designed to jointly model:
+- **Lexical semantics** from Vietnamese text (transcripts), and  
+- **Paralinguistic cues** from speech audio (prosody, rhythm, energy).
+
+By preserving **sequence-level representations** (token/frame sequences) and providing mask-correct fusion/pooling, VietMER enables systematic study of pretrained text and speech encoders and their cross-modal interactions under realistic **variable-length** settings.
+
+While the project targets academic research and reproducibility, it is also motivated by practical deployment in **call center intelligence**, where detecting customer emotion/attitude can support agent assistance, escalation prevention, QA automation, and conversation analytics.
 
 ---
 
 ## Research Goals
 
-MER-VN aims to study and improve MER performance by:
-- Leveraging **pretrained self-supervised encoders** for both text and audio
-- Modeling **cross-modal interactions** via learnable fusion layers
-- Ensuring **sequence-level** representations (not only `[CLS]`) to preserve temporal alignment
-- Supporting **reproducible experimentation** with configurable training and evaluation
+- **Multimodal Representation Learning for Vietnamese**  
+  Study complementary contributions of Vietnamese text encoders (**PhoBERT / ViDeBERTa**) and speech encoders (**wav2vec2 / Whisper / Fourier2Vec**).
+
+- **Cross-Modal Interaction Modeling**  
+  Evaluate fusion strategies (bidirectional **cross-attention** and recurrent baselines) for alignment, robustness, and modality reliance.
+
+- **Mask-Correct Learning under Variable-Length Signals**  
+  Ensure correct masking across encoder time-scales (notably for downsampled audio encoders) to prevent padding leakage in attention and pooling.
+
+- **Reproducible Benchmarking & Extensions**  
+  Provide a consistent experimental platform for ablations (encoder/fusion/pooling/sampling), comparative evaluation, and future research modules.
 
 ---
 
-## Core Contributions (Project-Level)
+## Applications
 
-1. **Modular Encoder–Fusion–Classifier Design**  
-   A plug-and-play architecture that allows easy replacement of text/audio encoders and fusion modules for research comparisons.
+### Primary: Call Center Emotion & Attitude Analytics
+- **Turn-level** emotion/attitude classification and **call-level** trend aggregation  
+- **Real-time escalation risk** estimation (e.g., rising anger/frustration over time)  
+- **Agent assistance** prompts and **auto-routing** decisions  
+- **Post-call QA** tagging, analytics dashboards, and monitoring
 
-2. **Sequence-Preserving Multimodal Modeling**  
-   The system retains full token/frame sequences:
-   - Text: \( \mathbf{T}\in\mathbb{R}^{B\times T_t\times d_t} \)
-   - Audio: \( \mathbf{A}\in\mathbb{R}^{B\times T_a\times d_a} \)  
-   enabling fine-grained fusion beyond pooled embeddings.
-
-3. **Mask-Correct Fusion for Downsampled Audio Encoders**  
-   Audio padding masks are **reconstructed at the encoder output time-scale** using `get_feat_lengths()` (for wav2vec2/Fourier2Vec/Whisper wrappers when available), preventing padding leakage in attention and pooling.
-
-4. **Research-Friendly Training Efficiency**  
-   - **Length-bucket batching** using a mixed length proxy:
-     \[
-       \ell_{mix}=\ell_{audio(sec)}+\alpha\cdot \ell_{text(words)}
-     \]
-   - **Weighted sampling** that adjusts for both **class imbalance** and **length bias**
-
-5. **Multi-Strategy Fusion Suite**  
-   Provides multiple fusion families for ablation:
-   - Bidirectional **Cross-Attention** (text↔audio)
-   - **BiLSTM + Cross-Attention Blocks**
-   - **Temporal CNN + BiLSTM + Cross-Attention Blocks**
+### Additional Use-Cases
+- Voice assistants and conversational agents (adaptive response strategies)  
+- E-learning engagement monitoring (confusion/frustration detection)  
+- Meeting analytics (tension/conflict trend estimation, with diarization)  
+- In-car voice interaction (stress-aware UI adaptation)  
+- Other affect-aware spoken-language applications
 
 ---
 
-## Method Overview
+## Open-Source Impact
 
-### Problem Definition
-Given an utterance with transcript \(x^{(t)}\), waveform \(x^{(a)}\), and label \(y\in\{1,\dots,C\}\), learn:
-\[
-f_\theta(x^{(t)},x^{(a)}) \rightarrow \hat{y}
-\]
-under supervised objectives (Cross-Entropy / Focal / Label Smoothing).
+VietMER is intended as an open-source library enabling both researchers and developers to integrate multimodal emotion understanding into downstream systems. The repository emphasizes:
+- **Modularity** (encoders/fusion strategies are swappable),
+- **Extensibility** (research prototypes can be integrated cleanly),
+- **Reproducibility** (config-driven experiments and consistent training/evaluation utilities).
 
-### Architecture: Encoder → Fusion → Classifier
+---
 
-**1) Encoders**
-- **Text**: PhoBERT / ViDeBERTa (Transformer encoder-only; full token sequence)
-- **Audio** (selectable):
-  - wav2vec2 XLSR-53 (self-supervised speech representations)
-  - Whisper encoder wrapper (feature extractor → encoder)
-  - Fourier2Vec (STFT → log-mel → Transformer encoder; lightweight)
-  - Dual encoder (wav2vec2 + VGGish, merge by concat/sum)
+## Method Summary (Architecture)
 
-**2) Projection to a Shared Fusion Space**
-\[
-\tilde{\mathbf{T}}=\mathrm{LN}(\mathbf{T}\mathbf{W}_t),\quad
-\tilde{\mathbf{A}}=\mathrm{LN}(\mathbf{A}\mathbf{W}_a),\quad
-\tilde{\mathbf{T}},\tilde{\mathbf{A}}\in\mathbb{R}^{B\times \cdot \times d}
-\]
-
-**3) Fusion (examples)**
-- **Bidirectional Cross-Attention**:
-\[
-\mathbf{T}'=\mathrm{MHA}(\tilde{\mathbf{T}},\tilde{\mathbf{A}},\tilde{\mathbf{A}}),\quad
-\mathbf{A}'=\mathrm{MHA}(\tilde{\mathbf{A}},\tilde{\mathbf{T}},\tilde{\mathbf{T}})
-\]
-\[
-\mathbf{F}=[\mathbf{T}';\mathbf{A}']\in\mathbb{R}^{B\times(T_t+T_a)\times d}
-\]
-
-- **Recurrent baselines**: BiLSTM per modality → cross-attention blocks → optional gating → concat sequence
-
-**4) Mask-Aware Pooling**
-Pooling options for utterance representation \( \mathbf{z} \):
-- `cls`, `mean`, `max`, `min` (masked reduce)
-- `attn` (learnable attention pooling)
-
-**5) Classifier**
-Configurable MLP head \( \rightarrow \) logits \( \in \mathbb{R}^{B\times C} \).
+### Encoder → Fusion → Classifier
+- **Text Encoder**: PhoBERT / ViDeBERTa (Transformer encoder-only; token-level sequence)
+- **Audio Encoder** (selectable):
+  - wav2vec2 XLSR-53
+  - Whisper encoder wrapper
+  - Fourier2Vec (STFT → log-mel → Transformer)
+  - Dual wav2vec2 + VGGish
+- **Fusion** (selectable):
+  - Bidirectional Cross-Attention
+  - BiLSTM + Cross-Attention Blocks
+  - Temporal CNN + BiLSTM + Cross-Attention Blocks
+- **Pooling**: `cls`, masked `mean/max/min`, or learnable attention pooling
+- **Classifier**: configurable MLP head → emotion logits
 
 ---
 
 ## Data Interface
 
-The pipeline expects JSONL splits (`train.jsonl`, `valid.jsonl`, `test.jsonl`). Each sample:
+The code expects JSONL splits (e.g., `output/train.jsonl`, `output/valid.jsonl`, `output/test.jsonl`).  
+Each sample includes waveform path, segment boundaries, transcript, and emotion label:
+
 ```json
 {
-  "utterance_id": "...",
-  "speaker_id": "...",
-  "wav_path": "wavs16k/....wav",
+  "utterance_id": "utt_001",
+  "speaker_id": "spk_01",
+  "wav_path": "wavs16k/example.wav",
   "start": 0.0,
-  "end": 10.4,
+  "end": 10.40,
   "transcript": "...",
   "emotion": "angry"
 }
-Audio is cropped by [start, end], resampled to cfg.sample_rate.
-Text is normalized (Unicode NFC + whitespace normalization).
 
-Training & Evaluation (Research Protocol)
-Trainer: AMP (mixed precision), gradient clipping, checkpointing (freq & best-on-val)
+## Training & Evaluation
 
-Sampling:
+- Mixed precision training (AMP) + gradient clipping
 
-length-bucket batching (reduces padding across modalities)
+- Checkpointing: periodic + best-on-validation
 
-weighted sampling (class + length bias)
+- Efficient batching: length-bucket batching (audio+text mixed length) and/or weighted sampling
 
-Loss: Cross-Entropy / FocalLoss (default) / LabelSmoothingCE
+- Loss functions: Cross-Entropy / Focal Loss / Label Smoothing
 
-Metrics: Accuracy + Macro-F1 (recommended for imbalance)
+- Metrics: Accuracy + Macro-F1 (recommended under class imbalance)
 
-Reproducible Ablations (Suggested)
-MER-VN is structured for clean ablation studies:
+## Reproducibility & Ablation Suggestions
 
-Encoders: PhoBERT vs ViDeBERTa; wav2vec2 vs Whisper vs Fourier2Vec vs Dual
+- VietMER is designed for controlled ablations:
 
-Fusion: xattn vs bilstm_attn vs cnn_bilstm_attn
+- Encoders: PhoBERT vs ViDeBERTa; wav2vec2 vs Whisper vs Fourier2Vec vs Dual
 
-Pooling: cls vs mean/max/min vs attn pooling
+- Fusion: xattn vs bilstm_attn vs cnn_bilstm_attn
 
-Sampling: weighted vs length-bucket vs both
+- Pooling: cls vs mean/max/min vs attn pooling
 
+- Sampling: weighted sampler vs length bucket vs both
