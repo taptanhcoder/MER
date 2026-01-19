@@ -42,7 +42,6 @@ class BaseConfig(Base):
     def load(self, cfg_path: str):
         def decode_value(value: str):
             value = value.strip()
-            # số int/float (kể cả số âm)
             if value.lstrip("-").replace(".", "", 1).isdigit():
                 if "." in value:
                     return float(value)
@@ -61,7 +60,6 @@ class BaseConfig(Base):
             data = [d for d in f.read().split("\n") if d]
         data_dict = {}
         for line in data:
-            # chỉ tách 1 lần đầu, tránh vỡ khi value có dấu ':'
             key, value = line.split(":", 1)[0].strip(), line.split(":", 1)[1].strip()
             if value.startswith("[") and value.endswith("]"):
                 value = [decode_value(x) for x in value[1:-1].split(",")]
@@ -93,7 +91,7 @@ class Config(BaseConfig):
         self.num_workers: int = 2
 
         # LR/Optim
-        self.learning_rate: float = 3e-5           # head LR đề xuất
+        self.learning_rate: float = 3e-5
         self.learning_rate_step_size: int = 30
         self.learning_rate_gamma: float = 0.1
         self.optimizer_type: str = "AdamW"
@@ -101,8 +99,8 @@ class Config(BaseConfig):
         self.adam_beta_2 = 0.999
         self.adam_eps = 1e-08
         self.adam_weight_decay = 0.01
-        self.momentum = 0.99                 # fixed typo
-        self.sdg_weight_decay = 1e-6
+        self.momentum = 0.99
+        self.sgd_weight_decay = 1e-6
 
         # Scheduler
         self.scheduler_type: str = "cosine_warmup"
@@ -124,7 +122,7 @@ class Config(BaseConfig):
         self.loss_gamma: float = 1.5
         self.label_smoothing: float = 0.05
 
-        # Dataset (VNEMOS JSONL)
+        # Dataset
         self.data_name: str = "VNEMOS"
         self.data_root: str = "output"
         self.jsonl_dir: str = ""
@@ -133,39 +131,75 @@ class Config(BaseConfig):
         self.max_audio_sec: float = None
         self.text_max_length: int = 96
 
-        # Length-bucket sampler
+        # Samplers
         self.use_length_bucket: bool = True
         self.length_bucket_size: int = 64
-        self.bucketing_text_alpha: float = 0.03  # mức ảnh hưởng text vào mix-length
-
-        # Weighted sampler chống length-bias theo lớp
+        self.bucketing_text_alpha: float = 0.03
         self.use_weighted_sampler: bool = True
         self.lenfreq_alpha: float = 0.5
 
-        # Model
-        self.num_classes: int = 5              # fixed to 5
+        # Model 
+        self.num_classes: int = 5
         self.num_attention_head: int = 8
         self.dropout: float = 0.10
         self.model_type: str = "MemoCMT"
 
-        # Text: PhoBERT
-        self.text_encoder_type: str = "phobert"
+        # Text encoder 
+        self.text_encoder_type: str = "phobert"          
         self.text_encoder_ckpt: str = "vinai/phobert-base"
         self.text_encoder_dim: int = 768
         self.text_unfreeze: bool = False
 
-        # Audio: Wav2Vec2 XLSR-53
+        # Audio encoder 
         self.audio_encoder_type: str = "wav2vec2_xlsr"
-        self.audio_encoder_ckpt: str = "facebook/wav2vec2-large-xlsr-53"
+        self.audio_encoder_ckpt: str = "facebook/wav2vec2-large-xlsr-53"  
         self.audio_encoder_dim: int = 1024
         self.audio_unfreeze: bool = False
 
-        # Fusion
+        # Whisper feature extractor override (None -> mặc định)
+        self.whisper_n_fft: Union[int, None] = None
+        self.whisper_hop_length: Union[int, None] = None
+        self.whisper_win_length: Union[int, None] = None
+        self.whisper_nb_mels: Union[int, None] = None
+
+        # W2V2 + VGGish merge mode: "concat" | "sum"
+        self.w2v2_vggish_merge: str = "concat"
+
+        # Fourier2Vec hyper
+        self.fourier_n_mels: int = 64
+        self.fourier_fmin: float = 125.0
+        self.fourier_fmax: float = 7500.0
+        self.fourier_win_ms: float = 25.0
+        self.fourier_hop_ms: float = 10.0
+        self.fourier_patch_len: int = 1
+        self.fourier_patch_hop: int = 1
+        self.fourier_hidden_size: int = 256
+        self.fourier_num_heads: int = 4
+        self.fourier_num_layers: int = 4
+
+        # Fusion chung
         self.fusion_dim: int = 768
-        self.fusion_head_output_type: str = "cls"
+        self.fusion_head_output_type: str = "cls"  
         self.linear_layer_output: List = [256, 128]
 
-        # Train tricks
+        self.fusion_type: str = "xattn"
+
+        self.fusion_bilstm_hidden_text: int = self.fusion_dim // 2
+        self.fusion_bilstm_hidden_audio: int = self.fusion_dim // 2
+        self.fusion_bilstm_layers: int = 1
+        self.fusion_bilstm_dropout: float = 0.1
+        self.fusion_bilstm_bidirectional: bool = True
+        self.fusion_blocks: int = 1
+        self.fusion_merge: str = "concat"        
+        self.fusion_pool_heads: int = 1          
+
+
+        self.fusion_cnn_layers: int = 2
+        self.fusion_cnn_kernel: int = 3
+        self.fusion_cnn_dropout: float = 0.10
+        self.fusion_cnn_dilation_growth: int = 1
+
+
         self.use_amp: bool = True
         self.max_grad_norm: float = 1.0
 

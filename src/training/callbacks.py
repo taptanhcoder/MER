@@ -109,28 +109,46 @@ class GradualUnfreezeCallback(Callback):
         self.audio_last_k = int(audio_last_k)
         self.done = False
 
-    def _set_requires_grad(self, module, pattern: str, last_k: int):
+    def _set_requires_grad(self, module, pattern: str, last_k: int) -> bool:
         layer_ids = set()
         for n, _ in module.named_parameters():
             m = re.search(pattern, n)
             if m:
-                layer_ids.add(int(m.group(1)))
+
+                g = [int(x) for x in m.groups() if x is not None]
+                if g:
+                    layer_ids.add(g[-1])
         if not layer_ids:
-            return
+            return False
         cutoff = set(sorted(layer_ids)[-last_k:])
         for n, p in module.named_parameters():
             m = re.search(pattern, n)
-            if m and int(m.group(1)) in cutoff:
-                p.requires_grad = True
+            if m:
+                g = [int(x) for x in m.groups() if x is not None]
+                if g and g[-1] in cutoff:
+                    p.requires_grad = True
+        return True
 
     def __call__(self, trainer, global_step, global_epoch, logs, isValPhase=False, logger: Optional[logging.Logger] = None):
         if self.done or isValPhase or global_epoch < self.epoch_trigger:
             return
         log = logger or logging.getLogger(__name__)
         net = trainer.network
-        # PhoBERT: encoder.layer.<i>.
+
+        # PhoBERT/ViDeBERTa: encoder.layer.<i>.
         self._set_requires_grad(net.text_encoder, r"encoder\.layer\.(\d+)\.", self.text_last_k)
-        # Wav2Vec2: encoder.layers.<i>.
-        self._set_requires_grad(net.audio_encoder.model, r"encoder\.layers\.(\d+)\.", self.audio_last_k)
+
+        # Audio encoder:
+
+        ok = False
+        if hasattr(net.audio_encoder, "model"):
+            ok = self._set_requires_grad(net.audio_encoder.model, r"encoder\.layers\.(\d+)\.", self.audio_last_k) or ok
+        # BERT-style naming
+        ok = self._set_requires_grad(net.audio_encoder, r"encoder\.layer\.(\d+)\.", self.audio_last_k) or ok
+        ok = self._set_requires_grad(net.audio_encoder, r"layers\.(\d+)\.", self.audio_last_k) or ok
+
         self.done = True
-        log.info(f"Gradual unfreeze done at epoch {global_epoch}: text_last_k={self.text_last_k}, audio_last_k={self.audio_last_k}")
+        log.info(
+            f"Gradual unfreeze done at epoch {global_epoch}: "
+            f"text_last_k={self.text_last_k}, audio_last_k={self.audio_last_k}"
+        )

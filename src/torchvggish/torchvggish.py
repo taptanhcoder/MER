@@ -25,7 +25,7 @@ class Postprocessor(nn.Module):
         quantized = torch.round((clipped + 2.0) * (255.0 / 4.0))           
         return quantized  
 
-# ---- VGGish backbone ----
+
 def make_layers():
     layers = []
     in_channels = 1

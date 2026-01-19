@@ -54,14 +54,14 @@ class TorchTrainer:
 
     # ---- checkpoint I/O ----
     def save_weights(self, dirpath: str, tag: int) -> str:
-        """Lưu chỉ state_dict của network (nhẹ)."""
+
         out = Path(dirpath) / (f"weights_step_{tag}.pth" if tag else "weights_best.pth")
         state = self.network.state_dict()
         torch.save(state, out)
         return str(out)
 
     def save_all_states(self, dirpath: str, epoch: int, tag: int) -> str:
-        """Lưu đầy đủ model/optimizer/scheduler/scaler."""
+
         out = Path(dirpath) / (f"state_e{epoch}_s{tag}.pth" if tag else "state_best.pth")
         state = {
             "model": self.network.state_dict(),
@@ -89,7 +89,7 @@ class TorchTrainer:
 
     @staticmethod
     def _compute_macro_f1_from_preds(preds: torch.Tensor, targets: torch.Tensor) -> float:
-        """Tự tính macro-F1 nếu sklearn không có (đủ dùng)."""
+
         num_classes = int(max(int(preds.max().item()), int(targets.max().item())) + 1)
         f1s = []
         for c in range(num_classes):
@@ -120,18 +120,18 @@ class TorchTrainer:
             epoch_logs = []
 
             for batch in train_loader:
-                step_logs = self.train_step(batch)  # subclass
+                step_logs = self.train_step(batch)  
                 self.global_step += 1
                 epoch_logs.append(step_logs)
 
-                # Step scheduler per-step
+  
                 if self.scheduler is not None and self.scheduler_step_unit == "step":
                     try:
                         self.scheduler.step()
                     except Exception:
                         pass
 
-                # Callbacks per step (non-val phase)
+
                 logs_for_cb = dict(step_logs)
                 for cb in callbacks:
                     try:
@@ -296,5 +296,5 @@ class Trainer(TorchTrainer):
             "val_loss": float(loss.detach().cpu()),
             "val_acc": float(acc.detach().cpu()),
             "preds": preds.detach().cpu(),
-            "targets": labels.detach().cpu(),  # <-- fix: dùng labels
+            "targets": labels.detach().cpu(),  
         }

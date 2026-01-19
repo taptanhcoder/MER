@@ -1,4 +1,4 @@
-# src/loading/dataloader.py
+
 import os, json, re, pickle
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -213,7 +213,7 @@ class Collator:
         self.text_max_length = text_max_length
 
     def __call__(self, batch: List[Dict]):
-
+        # ---- AUDIO PAD ----
         audios = [b["audio"] for b in batch]
         lengths = [a.numel() for a in audios]
         T = max(a.numel() for a in audios)
@@ -225,16 +225,28 @@ class Collator:
         for i, L in enumerate(lengths):
             audio_attn_mask[i, :L] = 1
 
+        # ---- TEXT TOKENIZE (plug-and-play safe) ----
         texts = [b["text"] for b in batch]
-        tok = self.tok(
-            texts,
+        kwargs = dict(
             padding=True,
             truncation=True,
             max_length=self.text_max_length,
             return_tensors="pt",
-            add_prefix_space=True,
             pad_to_multiple_of=8,
         )
+
+        # Chỉ bật add_prefix_space cho họ RoBERTa/PhoBERT
+        tok_class = self.tok.__class__.__name__.lower()
+        tok_name  = str(getattr(self.tok, "name_or_path", "")).lower()
+        if ("roberta" in tok_class) or ("phobert" in tok_name) or ("roberta" in tok_name):
+            kwargs["add_prefix_space"] = True
+
+        try:
+            tok = self.tok(texts, **kwargs)
+        except TypeError:
+            # fallback nếu tokenizer không nhận add_prefix_space
+            kwargs.pop("add_prefix_space", None)
+            tok = self.tok(texts, **kwargs)
 
         tok = {k: v for k, v in tok.items()}
 
